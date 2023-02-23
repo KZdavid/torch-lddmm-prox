@@ -288,37 +288,23 @@ class LDDMM:
         fname, fext = os.path.splitext(filename)
         if fext == '.img' or fext == '.hdr':
             img_struct = nib.load(fname + '.img')
-            spacing = img_struct.header['pixdim'][1:4]
-            size = img_struct.header['dim'][1:4]
-            image = np.squeeze(img_struct.get_data().astype(np.float32))
-            if im_norm_ms == 1:
-                if np.std(image) != 0:
-                    image = torch.tensor((image - np.mean(image)) / np.std(image)).type(self.params['dtype']).to(device=self.params['cuda'])
-
-                else:
-                    image = torch.tensor((image - np.mean(image)) ).type(self.params['dtype']).to(device=self.params['cuda'])
-                    print('WARNING: stdev of image is zero, not rescaling.')
-            else:
-                image = torch.tensor(image).type(self.params['dtype']).to(device=self.params['cuda'])
-            return (image, spacing, size)
         elif fext == '.nii':
             img_struct = nib.load(fname + '.nii')
-            spacing = img_struct.header['pixdim'][1:4]
-            size = img_struct.header['dim'][1:4]
-            image = np.squeeze(img_struct.get_data().astype(np.float32))
-            if im_norm_ms == 1:
-                if np.std(image) != 0:
-                    image = torch.tensor((image - np.mean(image)) / np.std(image)).type(self.params['dtype']).to(device=self.params['cuda'])
-
-                else:
-                    image = torch.tensor((image - np.mean(image)) ).type(self.params['dtype']).to(device=self.params['cuda'])
-                    print('WARNING: stdev of image is zero, not rescaling.')
-            else:
-                image = torch.tensor(image).type(self.params['dtype']).to(device=self.params['cuda'])
-            return (image, spacing, size)
         else:
             print('File format not supported.\n')
             return (-1,-1,-1)
+        spacing = img_struct.header['pixdim'][1:4]
+        size = img_struct.header['dim'][1:4]
+        image = np.squeeze(img_struct.get_data().astype(np.float32))
+        if im_norm_ms == 1:
+            if np.std(image) != 0:
+                image = torch.tensor((image - np.mean(image)) / np.std(image)).type(self.params['dtype']).to(device=self.params['cuda'])
+            else:
+                image = torch.tensor((image - np.mean(image)) ).type(self.params['dtype']).to(device=self.params['cuda'])
+                print('WARNING: stdev of image is zero, not rescaling.')
+        else:
+            image = torch.tensor(image).type(self.params['dtype']).to(device=self.params['cuda'])
+        return (image, spacing, size)
     
     # helper function to check parameters before running registration
     def _checkParameters(self):
@@ -594,6 +580,7 @@ class LDDMM:
     # initialize lddmm kernels
     def initializeKernels(self):
         # make smoothing kernel on CPU
+        # generate a grid of coordinates for image I
         f0 = np.linspace(0,self.nx[0]-1,int(np.round(self.nx[0]*self.params['v_scale'])))/(self.dx[0]*self.nx[0])
         f1 = np.linspace(0,self.nx[1]-1,int(np.round(self.nx[1]*self.params['v_scale'])))/(self.dx[1]*self.nx[1])
         f2 = np.linspace(0,self.nx[2]-1,int(np.round(self.nx[2]*self.params['v_scale'])))/(self.dx[2]*self.nx[2])
@@ -2744,7 +2731,7 @@ class LDDMM:
             end_time = time.time()
             
             if self.params['verbose'] == 1:
-                if it > 0:
+                if it > 0:  # print info every iter
                     total_time += end_time-start_time
                     #print('iter: ' + str(it) + ', E = ' + str(E.item()) + ', ER = ' + str(ER.item()) + ', EM = ' + str(EM.item()) + ', ep = ' + str((self.GDBeta*self.params['epsilon']).item()) + ', time = ' + str(end_time-start_time) + '.')
                     if self.params['checkaffinestep'] == 1 and self.params['do_affine'] > 0:
@@ -2755,6 +2742,7 @@ class LDDMM:
                     #print('iter: ' + str(it) + ', E = ' + str(E.item()) + ', ER = ' + str(ER.item()) + ', EM = ' + str(EM.item()) + ', ep = ' + str((self.GDBeta*self.params['epsilon']).item()) + '.')
                     print("iter: " + str(it) + ", E = {:.4f}, ER = {:.4f}, EM = {:.4f}, epd = {:.6f}.".format(E.item(),ER.item(),EM.item(),(self.GDBeta*self.params['epsilon']).item()))
             
+            # print end info
             # or (self.EAll[-1]/self.EAll[-2] < 1-self.params['minenergychange'] and self.EAll[-2]/self.EAll[-3] < 1-self.params['minenergychange'] and self.EAll[-3]/self.EAll[-4] < 1-self.params['minenergychange'] and self.EAll[-4]/self.EAll[-5] < 1-self.params['minenergychange'])
             if it == self.params['niter']-1 or ((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))) or self.EAll[-1]/self.EAll[self.params['energy_fraction_from']] <= self.params['energy_fraction']:
                 if ((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))):
@@ -2765,7 +2753,7 @@ class LDDMM:
                 print('Total elapsed runtime: {:.2f} seconds.'.format(total_time))
                 break
             
-            del E, ER, EM
+            del E, ER, EM # release memory for energy functions
             
             # update step sizes
             if self.params['we'] == 0 or (self.params['we'] > 0 and np.mod(it,self.params['nMstep']) != 0):
