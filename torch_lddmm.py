@@ -131,6 +131,7 @@ class LDDMM:
         optimizer_dict['rmsprop'] = 'root mean square propagation (UNDER CONSTRUCTION)'
         optimizer_dict['sgd'] = 'stochastic gradient descent'
         optimizer_dict['sgdm'] = 'stochastic gradient descent with momentum (UNDER CONSTRUCTION)'
+        optimizer_dict['pgm'] = 'proximal gradient method (UNDER CONSTRUCTION)'
         print('\nCurrent parameters:')
         print('>    a               = ' + str(a) + ' (smoothing kernel, a*(pixel_size))')
         print('>    p               = ' + str(p) + ' (smoothing kernel power, p*2)')
@@ -1693,7 +1694,7 @@ class LDDMM:
     def updateGDLearningRate(self):
         flag = False
         if len(self.EAll) > 1:
-            if self.params['optimizer'] == 'gdr':
+            if self.params['optimizer'] == 'gdr' or self.params['optimizer'] == 'pgm':
                 if self.params['checkaffinestep'] == 0 and self.params['do_affine'] == 0:
                     # energy increased
                     if self.EAll[-1] >= self.EAll[-2] or self.EAll[-1]/self.EAll[-2] > 0.99999:
@@ -2001,10 +2002,11 @@ class LDDMM:
             
         if self.params['optimizer'] != 'adam':
             grad_list = [irfft(rfft(x,3,onesided=False)*self.Khat,3,onesided=False) for x in grad_list]
-            # add the regularization term
-            grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
-            grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
-            grad_list[2] += self.vt2[t]/self.params['sigmaR']**2
+            if self.params['optimizer'] != 'pgm':
+                # add the regularization term
+                grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
+                grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
+                grad_list[2] += self.vt2[t]/self.params['sigmaR']**2
         
         return grad_list,phiinv0_gpu,phiinv1_gpu,phiinv2_gpu
     
@@ -2099,9 +2101,10 @@ class LDDMM:
             
         if self.params['optimizer'] != 'adam':
             grad_list = [irfft(rfft(x,2,onesided=False)*self.Khat,2,onesided=False) for x in grad_list]
-            # add the regularization term
-            grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
-            grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
+            if self.params['optimizer'] != 'pgm':
+                # add the regularization term
+                grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
+                grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
         
         return grad_list,phiinv0_gpu,phiinv1_gpu
     
@@ -2183,6 +2186,12 @@ class LDDMM:
             self.vt1[t] -= self.sgdm['m1'][t]
             if self.J[0].dim() > 2:
                 self.vt2[t] -= self.sgdm['m2'][t]
+        elif self.params['optimizer'] == 'pgm':
+            self.vt0[t] = (self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            self.vt1[t] = (self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            if self.J[0].dim() > 2:
+                self.vt2[t] = (self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            
         else:
             self.vt0[t] -= self.params['epsilon']*self.GDBeta*grad_list[0]
             self.vt1[t] -= self.params['epsilon']*self.GDBeta*grad_list[1]
