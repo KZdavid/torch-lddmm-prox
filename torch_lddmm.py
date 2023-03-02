@@ -131,7 +131,7 @@ class LDDMM:
         optimizer_dict['rmsprop'] = 'root mean square propagation (UNDER CONSTRUCTION)'
         optimizer_dict['sgd'] = 'stochastic gradient descent'
         optimizer_dict['sgdm'] = 'stochastic gradient descent with momentum (UNDER CONSTRUCTION)'
-        optimizer_dict['pgm'] = 'proximal gradient method (UNDER CONSTRUCTION)'
+        optimizer_dict['pgm'] = 'proximal gradient method (UNDER CONSTRUCTION) with L1 regulization'
         print('\nCurrent parameters:')
         print('>    a               = ' + str(a) + ' (smoothing kernel, a*(pixel_size))')
         print('>    p               = ' + str(p) + ' (smoothing kernel power, p*2)')
@@ -2187,10 +2187,18 @@ class LDDMM:
             if self.J[0].dim() > 2:
                 self.vt2[t] -= self.sgdm['m2'][t]
         elif self.params['optimizer'] == 'pgm':
-            self.vt0[t] = (self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
-            self.vt1[t] = (self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            # L2 regularization
+            # self.vt0[t] = (self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            # self.vt1[t] = (self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            # if self.J[0].dim() > 2:
+            #     self.vt2[t] = (self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            
+            # L1 regularization
+            m = torch.nn.Softshrink(0.005 * self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            self.vt0[t] = m(self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
+            self.vt1[t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1])
             if self.J[0].dim() > 2:
-                self.vt2[t] = (self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2]) / (1 + self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+                self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
             
         else:
             self.vt0[t] -= self.params['epsilon']*self.GDBeta*grad_list[0]
