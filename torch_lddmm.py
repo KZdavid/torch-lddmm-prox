@@ -59,7 +59,7 @@ def rfft(mat,dim,onesided=False):
         return torch.fft.fftn(mat)
     
 class LDDMM:
-    def __init__(self,template=None,target=None,costmask=None,outdir='./',gpu_number=0,a=5.0,p=2,niter=100,epsilon=5e-3,epsilonL=1.0e-7,epsilonT=2.0e-5,sigma=2.0,sigmaR=1.0,nt=5,do_lddmm=1,do_affine=0,checkaffinestep=0,optimizer='gd',sg_mask_mode='ones',sg_rand_scale=1.0,sg_sigma=1.0,sg_climbcount=1,sg_holdcount=1,sg_gamma=0.9,adam_alpha=0.1,adam_beta1=0.9,adam_beta2=0.999,adam_epsilon=1e-8,ada_rho=0.95,ada_epsilon=1e-6,rms_rho=0.9,rms_epsilon=1e-8,rms_alpha=0.001,maxclimbcount=3,savebestv=False,minenergychange = 0.000001,minbeta=1e-4,dtype='float',im_norm_ms=0,slice_alignment=0,energy_fraction=0.02,energy_fraction_from=0,cc=0,cc_channels=[],we=0,we_channels=[],sigmaW=1.0,nMstep=5,dx=None,low_memory=0,update_epsilon=0,verbose=1,v_scale=1.0,v_scale_smoothing=0):
+    def __init__(self,template=None,target=None,costmask=None,outdir='./',gpu_number=0,a=5.0,p=2,niter=100,epsilon=5e-3,epsilonL=1.0e-7,epsilonT=2.0e-5,sigma=2.0,sigmaR=1.0,nt=5,do_lddmm=1,do_affine=0,checkaffinestep=0,optimizer='gd',sg_mask_mode='ones',sg_rand_scale=1.0,sg_sigma=1.0,sg_climbcount=1,sg_holdcount=1,sg_gamma=0.9,adam_alpha=0.1,adam_beta1=0.9,adam_beta2=0.999,adam_epsilon=1e-8,ada_rho=0.95,ada_epsilon=1e-6,rms_rho=0.9,rms_epsilon=1e-8,rms_alpha=0.001,apgm_theta=1.0,maxclimbcount=3,savebestv=False,minenergychange = 0.000001,minbeta=1e-4,dtype='float',im_norm_ms=0,slice_alignment=0,energy_fraction=0.02,energy_fraction_from=0,cc=0,cc_channels=[],we=0,we_channels=[],sigmaW=1.0,nMstep=5,dx=None,low_memory=0,update_epsilon=0,verbose=1,v_scale=1.0,v_scale_smoothing=0):
         self.params = {}
         self.params['gpu_number'] = gpu_number
         self.params['a'] = float(a)
@@ -98,6 +98,7 @@ class LDDMM:
         self.params['rms_rho'] = float(rms_rho)
         self.params['rms_epsilon'] = float(rms_epsilon)
         self.params['rms_alpha'] = float(rms_alpha)
+        self.params['apgm_theta'] = float(apgm_theta)
         self.params['maxclimbcount'] = maxclimbcount
         self.params['savebestv'] = savebestv
         self.params['minbeta'] = minbeta
@@ -132,6 +133,7 @@ class LDDMM:
         optimizer_dict['sgd'] = 'stochastic gradient descent'
         optimizer_dict['sgdm'] = 'stochastic gradient descent with momentum (UNDER CONSTRUCTION)'
         optimizer_dict['pgm'] = 'proximal gradient method (UNDER CONSTRUCTION) with L1 regulization'
+        optimizer_dict['apgm'] = 'Nestrov accelerated proximal gradient method (UNDER CONSTRUCTION) with L1 regulization'
         print('\nCurrent parameters:')
         print('>    a               = ' + str(a) + ' (smoothing kernel, a*(pixel_size))')
         print('>    p               = ' + str(p) + ' (smoothing kernel power, p*2)')
@@ -194,6 +196,8 @@ class LDDMM:
                 print('>    +sg_rand_scale  = ' + str(sg_rand_scale) + ' (scale for non-gauss sg masking)')
                 if optimizer == 'sgdm':
                     print('>    +sg_gamma       = ' + str(sg_gamma) + ' (fraction of paste updates)')
+            elif optimizer == 'apgm':
+                print('>    +apgm_theta     = ' + str(apgm_theta) + ' (momentum parameter)')
         
         else:
             print('WARNING: optimizer \'' + str(optimizer) + '\' not recognized. Setting to basic gradient descent with reducing step size.')
@@ -864,7 +868,18 @@ class LDDMM:
                 self.sgdm['m1'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
                 self.sgdm['m2'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
             self.sgd_maskiter = 0
-        
+            
+        # APGM initialization
+        if self.params['optimizer'] == 'apgm':
+            # here we call m0 the accumulator for the gradients and v0 the accumulator for the parameter itself
+            self.apgm = {}
+            self.apgm['vt0_old'] = []
+            self.apgm['vt1_old'] = []
+            self.apgm['vt2_old'] = []
+            self.apgm['theta_old'] = []
+            self.apgm['theta'] = self.params['apgm_theta']
+            self.apgm['beta'] =[]
+                    
         # reset initializer flags
         self.initializer_flags['load'] = 0
         self.initializer_flags['lddmm'] = 0
@@ -1694,7 +1709,7 @@ class LDDMM:
     def updateGDLearningRate(self):
         flag = False
         if len(self.EAll) > 1:
-            if self.params['optimizer'] == 'gdr' or self.params['optimizer'] == 'pgm':
+            if self.params['optimizer'] == 'gdr' or self.params['optimizer'] == 'pgm' or self.params['optimizer'] == 'apgm':
                 if self.params['checkaffinestep'] == 0 and self.params['do_affine'] == 0:
                     # energy increased
                     if self.EAll[-1] >= self.EAll[-2] or self.EAll[-1]/self.EAll[-2] > 0.99999:
@@ -2002,7 +2017,7 @@ class LDDMM:
             
         if self.params['optimizer'] != 'adam':
             grad_list = [irfft(rfft(x,3,onesided=False)*self.Khat,3,onesided=False) for x in grad_list]
-            if self.params['optimizer'] != 'pgm':
+            if self.params['optimizer'] != 'pgm' or self.params['optimizer'] != 'apgm':
                 # add the regularization term
                 grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
                 grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
@@ -2101,7 +2116,7 @@ class LDDMM:
             
         if self.params['optimizer'] != 'adam':
             grad_list = [irfft(rfft(x,2,onesided=False)*self.Khat,2,onesided=False) for x in grad_list]
-            if self.params['optimizer'] != 'pgm':
+            if self.params['optimizer'] != 'pgm' or self.params['optimizer'] != 'apgm':
                 # add the regularization term
                 grad_list[0] += self.vt0[t]/self.params['sigmaR']**2
                 grad_list[1] += self.vt1[t]/self.params['sigmaR']**2
@@ -2199,7 +2214,17 @@ class LDDMM:
             self.vt1[t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1])
             if self.J[0].dim() > 2:
                 self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
-            
+        elif self.params['optimizer'] == 'apgm':
+            m = torch.nn.Softshrink(0.005 * self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
+            # save old variable
+            self.apgm['vt0_old'] = self.vt0[t].clone()
+            self.apgm['vt1_old'] = self.vt1[t].clone()
+            self.apgm['vt2_old'] = self.vt2[t].clone()
+            # do proximal gradient step
+            self.vt0[t] = m(self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
+            self.vt1[t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1])
+            if self.J[0].dim() > 2:
+                self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
         else:
             self.vt0[t] -= self.params['epsilon']*self.GDBeta*grad_list[0]
             self.vt1[t] -= self.params['epsilon']*self.GDBeta*grad_list[1]
@@ -2247,6 +2272,15 @@ class LDDMM:
         self.sgdm['m0'][t] = self.params['sg_gamma']*self.sgdm['m0'][t] + self.params['epsilon']*self.GDBeta*grad_list[0]
         self.sgdm['m1'][t] = self.params['sg_gamma']*self.sgdm['m1'][t] + self.params['epsilon']*self.GDBeta*grad_list[1]
         self.sgdm['m2'][t] = self.params['sg_gamma']*self.sgdm['m2'][t] + self.params['epsilon']*self.GDBeta*grad_list[2]
+        
+    def updateAPGMinertial(self,t):
+        self.apgm['theta_old'] = self.apgm['theta']
+        self.apgm['theta'] = 0.5 + 0.5*np.sqrt(1+4*self.apgm['theta_old']**2)
+        self.apgm['beta'] = (self.apgm['theta_old']-1)/self.apgm['theta']
+        # do inertial update
+        self.vt0[t] = self.vt0[t] + self.apgm['beta']*(self.vt0[t]-self.apgm['vt0_old'])
+        self.vt1[t] = self.vt1[t] + self.apgm['beta']*(self.vt1[t]-self.apgm['vt1_old'])
+        self.vt2[t] = self.vt2[t] + self.apgm['beta']*(self.vt1[t]-self.apgm['vt2_old'])
     
     # convenience function for calculating and updating gradients of Vt
     def calculateAndUpdateGradientsVt(self, lambda1, iter=0):
@@ -2256,6 +2290,9 @@ class LDDMM:
             phiinv2_gpu = self.X2.clone()
         
         for t in range(self.params['nt']-1,-1,-1):
+            if self.params['optimizer'] == 'apgm' and iter > 0:
+                self.updateAPGMinertial(t) 
+            
             if self.J[0].dim() > 2:
                 grad_list,phiinv0_gpu,phiinv1_gpu,phiinv2_gpu = self.calculateGradientVt(lambda1,t,phiinv0_gpu,phiinv1_gpu,phiinv2_gpu)
             else:
