@@ -1,0 +1,40 @@
+apgm illustrate
+
+vt          zk      yk      zk+1    xk      vk+1    zk+1
+vt_old      xk-1    xk                              xk
+zt          xk      zk+1                            xk+1
+grad_list           n_yk            n_xk    
+EALL[-1]                    Ezk+1                   minE
+E                           Ezk+1           Evk+1
+flag        a                       n
+
+
+0. flag = a
+1. vt = yk
+2. grad_list = n_yk
+3. vt_old = xk
+4. zt = zk+1 = prox(yk - n_yk)
+5. vt = zk+1
+6. Ezk+1 EALL.append
+
+7. flag = n
+8. vt = xk
+9. grad_list = n_xk
+10. vt = vk+1 = prox(xk - n_xk)
+11. Evk+1 compare change EALL
+
+xk+1 = zk+1
+12a. vt = zk+1
+
+xk+1 = vk+1
+12b. vt, zt = zt, vt
+
+x1=x0
+
+iter        0   1   2   2   2
+vt          x1  v2  x2      x3
+vt_old      x1  x1          x2
+zt          x1  v2  y1  z3
+flag            n
+
+z1=x1, z2=v2

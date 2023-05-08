@@ -873,13 +873,22 @@ class LDDMM:
         if self.params['optimizer'] == 'apgm':
             # here we call m0 the accumulator for the gradients and v0 the accumulator for the parameter itself
             self.apgm = {}
-            self.apgm['vt0_old'] = []
+            self.apgm['acc_flag'] = False # True for acclerate version and False for normal pgm
+            self.apgm['vt0_old'] = [] # detailed algoritm illustration in apgm_illustrate.txt
             self.apgm['vt1_old'] = []
             self.apgm['vt2_old'] = []
-            self.apgm['theta_old'] = []
+            self.apgm['zt0'] = []
+            self.apgm['zt1'] = []
+            self.apgm['zt2'] = []
             self.apgm['theta'] = self.params['apgm_theta']
-            self.apgm['beta'] =[]
-                    
+            for i in range(self.params['nt']):
+                self.apgm['vt0_old'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+                self.apgm['vt1_old'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+                self.apgm['vt2_old'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+                self.apgm['zt0'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+                self.apgm['zt1'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+                self.apgm['zt2'].append(torch.tensor(np.zeros((int(np.round(self.nx[0]*self.params['v_scale'])),int(np.round(self.nx[1]*self.params['v_scale'])),int(np.round(self.nx[2]*self.params['v_scale']))))).type(self.params['dtype']).to(device=self.params['cuda']))
+            
         # reset initializer flags
         self.initializer_flags['load'] = 0
         self.initializer_flags['lddmm'] = 0
@@ -1709,7 +1718,7 @@ class LDDMM:
     def updateGDLearningRate(self):
         flag = False
         if len(self.EAll) > 1:
-            if self.params['optimizer'] == 'gdr' or self.params['optimizer'] == 'pgm' or self.params['optimizer'] == 'apgm':
+            if self.params['optimizer'] == 'gdr' or self.params['optimizer'] == 'pgm':
                 if self.params['checkaffinestep'] == 0 and self.params['do_affine'] == 0:
                     # energy increased
                     if self.EAll[-1] >= self.EAll[-2] or self.EAll[-1]/self.EAll[-2] > 0.99999:
@@ -1732,6 +1741,11 @@ class LDDMM:
                     
                     if self.EMAffineT[-1] > self.EMAffineR[-1]:
                         self.GDBetaAffineT *= 0.7
+            elif self.params['optimizer'] == 'apgm':
+                # energy increased
+                if len(self.EAll) > 3:
+                    if (self.EAll[-1] >= self.EAll[-2] and self.EAll[-2] >= self.EAll[-3]) or (self.EAll[-1]/self.EAll[-2] > 0.99999 and self.EAll[-2]/self.EAll[-3] > 0.99999):
+                        self.GDBeta *= 0.8
             elif self.params['optimizer'] == 'sgd' and len(self.EAll) >= self.params['sg_climbcount']:
                 climbcheck = 0
                 if self.params['checkaffinestep'] == 0 and self.params['do_affine'] == 0:
@@ -2216,15 +2230,27 @@ class LDDMM:
                 self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
         elif self.params['optimizer'] == 'apgm':
             m = torch.nn.Softshrink(0.005 * self.params['epsilon']*self.GDBeta/self.params['sigmaR']**2)
-            # save old variable
-            self.apgm['vt0_old'] = self.vt0[t].clone()
-            self.apgm['vt1_old'] = self.vt1[t].clone()
-            self.apgm['vt2_old'] = self.vt2[t].clone()
-            # do proximal gradient step
-            self.vt0[t] = m(self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
-            self.vt1[t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1])
+            
+            if self.apgm['acc_flag']: # acc part
+                # save old variable
+                self.apgm['vt0_old'][t] = self.apgm['zt0'][t].clone()
+                self.apgm['vt1_old'][t] = self.apgm['zt1'][t].clone()
+                # do proximal gradient step
+                self.apgm['zt0'][t] = m(self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
+                self.apgm['zt1'][t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[1])
+                self.vt0[t] = self.apgm['zt0'][t]
+                self.vt1[t] = self.apgm['zt1'][t]
+            else: # normal pgm part
+                self.vt0[t] = m(self.vt0[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
+                self.vt1[t] = m(self.vt1[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
+            
+            # for dim 3
             if self.J[0].dim() > 2:
-                self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
+                if self.apgm['acc_flag']:
+                    self.apgm['vt2_old'][t] = self.apgm['zt2'][t].clone()
+                    self.apgm['zt2'][t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[2])
+                else:
+                    self.vt2[t] = m(self.vt2[t] - self.params['epsilon']*self.GDBeta*grad_list[0])
         else:
             self.vt0[t] -= self.params['epsilon']*self.GDBeta*grad_list[0]
             self.vt1[t] -= self.params['epsilon']*self.GDBeta*grad_list[1]
@@ -2274,13 +2300,14 @@ class LDDMM:
         self.sgdm['m2'][t] = self.params['sg_gamma']*self.sgdm['m2'][t] + self.params['epsilon']*self.GDBeta*grad_list[2]
         
     def updateAPGMinertial(self,t):
-        self.apgm['theta_old'] = self.apgm['theta']
-        self.apgm['theta'] = 0.5 + 0.5*np.sqrt(1+4*self.apgm['theta_old']**2)
-        self.apgm['beta'] = (self.apgm['theta_old']-1)/self.apgm['theta']
-        # do inertial update
-        self.vt0[t] = self.vt0[t] + self.apgm['beta']*(self.vt0[t]-self.apgm['vt0_old'])
-        self.vt1[t] = self.vt1[t] + self.apgm['beta']*(self.vt1[t]-self.apgm['vt1_old'])
-        self.vt2[t] = self.vt2[t] + self.apgm['beta']*(self.vt1[t]-self.apgm['vt2_old'])
+        theta_old = self.apgm['theta']
+        self.apgm['theta'] = 0.5 + 0.5*np.sqrt(1+4*theta_old**2)
+        beta1 = (theta_old)/self.apgm['theta']
+        beta2 = (theta_old-1)/self.apgm['theta']
+        # do inertial update, vt = yk
+        self.vt0[t] = self.apgm['zt0'][t] + beta1*(self.vt0[t] - self.apgm['zt0'][t]) + beta2*(self.apgm['zt0'][t]-self.apgm['vt0_old'][t])
+        self.vt1[t] = self.apgm['zt1'][t] + beta1*(self.vt1[t] - self.apgm['zt1'][t]) + beta2*(self.apgm['zt1'][t]-self.apgm['vt1_old'][t])
+        self.vt2[t] = self.apgm['zt2'][t] + beta1*(self.vt2[t] - self.apgm['zt2'][t]) + beta2*(self.apgm['zt2'][t]-self.apgm['vt2_old'][t])
     
     # convenience function for calculating and updating gradients of Vt
     def calculateAndUpdateGradientsVt(self, lambda1, iter=0):
@@ -2290,8 +2317,9 @@ class LDDMM:
             phiinv2_gpu = self.X2.clone()
         
         for t in range(self.params['nt']-1,-1,-1):
-            if self.params['optimizer'] == 'apgm' and iter > 0:
-                self.updateAPGMinertial(t) 
+            
+            if self.params['optimizer'] == 'apgm' and iter > 0 and self.apgm['acc_flag']:
+                self.updateAPGMinertial(t)
             
             if self.J[0].dim() > 2:
                 grad_list,phiinv0_gpu,phiinv1_gpu,phiinv2_gpu = self.calculateGradientVt(lambda1,t,phiinv0_gpu,phiinv1_gpu,phiinv2_gpu)
@@ -2309,6 +2337,8 @@ class LDDMM:
             
             self.updateGradientVt(t,grad_list,iter=iter)
             del grad_list
+            # if self.params['optimizer'] == 'apgm' and iter > 0:
+            #     del grad_list_inertial
         
         del phiinv0_gpu,phiinv1_gpu
         if self.J[0].dim() > 2:
@@ -2723,7 +2753,17 @@ class LDDMM:
     
     # main loop
     def registration(self):
-        for it in range(self.params['niter']):
+        # for it in range(self.params['niter']):
+        it = 0
+        while it < self.params['niter']:            
+            apgmElogFlag = True
+            if self.params['optimizer'] == 'apgm':
+                if it > 0:
+                    if not self.apgm['acc_flag']:
+                        it = it - 1
+                    else:
+                        apgmElogFlag = False
+            
             # deform images forward
             if self.J[0].dim() == 2:
                 if self.params['low_memory'] < 1:
@@ -2765,30 +2805,58 @@ class LDDMM:
                     self.updateSGDMask()
                 
                 lambda1,EM = self.calculateMatchingEnergyMSE()
-            
+                               
             # save variables
             E = ER+EM
-            self.EMAll.append(EM)
-            self.ERAll.append(ER)
-            self.EAll.append(E.item())
-            if self.params['checkaffinestep']:
-                self.EMAffineT.append(EM)
-            if it == 0 and self.params['savebestv']:
-                self.bestE = E.clone()
+            if self.params['optimizer'] == 'apgm' and it > 0:
+                if not self.apgm['acc_flag']: # not acc_flag means acc have been caculated, so compare is needed
+                    if self.EAll[-1] > E: # E(zk+1) > E(vk+1), xk+1 = vk+1, swap vt and zt
+                        self.vt0, self.apgm['zt0'] = self.apgm['zt0'], self.vt0
+                        self.vt1, self.apgm['zt1'] = self.apgm['zt1'], self.vt1
+                        self.vt2, self.apgm['zt2'] = self.apgm['zt2'], self.vt2
+                        self.EMAll[-1] = EM
+                        self.ERAll[-1] = ER
+                        self.EAll[-1] = E.item()
+                        if self.params['checkaffinestep']:
+                            self.EMAffineT[-1] = EM
+                        useAcceleratedFlag = False
+                    else: # E(zk+1) <= E(vk+1), xk+1 = zk+1, no need for deep copy
+                        self.vt0 = self.apgm['zt0']
+                        self.vt1 = self.apgm['zt1']
+                        self.vt2 = self.apgm['zt2']
+                        useAcceleratedFlag = True
+                else:
+                    self.EMAll.append(EM)
+                    self.ERAll.append(ER)
+                    self.EAll.append(E.item())
+                    if self.params['checkaffinestep']:
+                        self.EMAffineT.append(EM)
+            else:
+                self.EMAll.append(EM)
+                self.ERAll.append(ER)
+                self.EAll.append(E.item())
+                if self.params['checkaffinestep']:
+                    self.EMAffineT.append(EM)
+                if it == 0 and self.params['savebestv']:
+                    self.bestE = E.clone()
             
             # print function
             if it > 0:
-                start_time = end_time
+                if apgmElogFlag:
+                    start_time = end_time
             else:
                 total_time = 0.0
             
-            end_time = time.time()
+            if apgmElogFlag:
+                end_time = time.time()
             
-            if self.params['verbose'] == 1:
+            if self.params['verbose'] == 1 and (apgmElogFlag or it == 0):
                 if it > 0:  # print info every iter
                     total_time += end_time-start_time
                     #print('iter: ' + str(it) + ', E = ' + str(E.item()) + ', ER = ' + str(ER.item()) + ', EM = ' + str(EM.item()) + ', ep = ' + str((self.GDBeta*self.params['epsilon']).item()) + ', time = ' + str(end_time-start_time) + '.')
-                    if self.params['checkaffinestep'] == 1 and self.params['do_affine'] > 0:
+                    if self.params['optimizer'] == 'apgm':
+                        print("iter: " + str(it) + ", E= {:.3f}, ER= {:.3f}, EM= {:.3f}, epd= {:.3f}, time= {:.2f}s. {}".format(E.item(),ER.item(),EM.item(),(self.GDBeta*self.params['epsilon']).item(),end_time-start_time, 'Accelerated' if useAcceleratedFlag else 'Normal'))
+                    elif self.params['checkaffinestep'] == 1 and self.params['do_affine'] > 0:
                         print("iter: " + str(it) + ", E= {:.3f}, ER= {:.3f}, EM= {:.3f}, epd= {:.3f}, del_Ev= {:.4f}, del_El= {:.4f}, del_Et= {:.4f}, time= {:.2f}s.".format(E.item(),ER.item(),EM.item(),(self.GDBeta*self.params['epsilon']).item(),self.ERAll[-1] + self.EMDiffeo[-1] - self.EAll[-2], self.EMAffineR[-1] - self.EMDiffeo[-1], self.EMAffineT[-1] - self.EMAffineR[-1],end_time-start_time))
                     else:
                         print("iter: " + str(it) + ", E= {:.3f}, ER= {:.3f}, EM= {:.3f}, epd= {:.3f}, time= {:.2f}s.".format(E.item(),ER.item(),EM.item(),(self.GDBeta*self.params['epsilon']).item(),end_time-start_time))
@@ -2798,19 +2866,24 @@ class LDDMM:
             
             # print end info
             # or (self.EAll[-1]/self.EAll[-2] < 1-self.params['minenergychange'] and self.EAll[-2]/self.EAll[-3] < 1-self.params['minenergychange'] and self.EAll[-3]/self.EAll[-4] < 1-self.params['minenergychange'] and self.EAll[-4]/self.EAll[-5] < 1-self.params['minenergychange'])
-            if it == self.params['niter']-1 or ((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))) or self.EAll[-1]/self.EAll[self.params['energy_fraction_from']] <= self.params['energy_fraction']:
-                if ((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))):
-                    print('Early termination: Energy change threshold reached.')
-                elif self.EAll[-1]/self.EAll[self.params['energy_fraction_from']] <= self.params['energy_fraction']:
-                    print('Early termination: Minimum fraction of initial energy reached.')
-                
-                print('Total elapsed runtime: {:.2f} seconds.'.format(total_time))
-                break
+            if apgmElogFlag:
+                if it == self.params['niter']-1 or (((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))) or self.EAll[-1]/self.EAll[self.params['energy_fraction_from']] <= self.params['energy_fraction']):
+                    if ((self.params['do_lddmm'] == 0 or self.GDBeta < self.params['minbeta']) and (self.params['do_affine']==0 or (self.GDBetaAffineR < self.params['minbeta'] and self.GDBetaAffineT < self.params['minbeta']))):
+                        print('Early termination: Energy change threshold reached.')
+                    elif self.EAll[-1]/self.EAll[self.params['energy_fraction_from']] <= self.params['energy_fraction']:
+                        print('Early termination: Minimum fraction of initial energy reached.')
+                    
+                    print('Total elapsed runtime: {:.2f} seconds.'.format(total_time))
+                    if self.params['optimizer'] == 'apgm':
+                        self.vt0 = self.apgm['zt0']
+                        self.vt1 = self.apgm['zt1']
+                        self.vt2 = self.apgm['zt2']
+                    break
             
             del E, ER, EM # release memory for energy functions
             
             # update step sizes
-            if self.params['we'] == 0 or (self.params['we'] > 0 and np.mod(it,self.params['nMstep']) != 0):
+            if apgmElogFlag and (self.params['we'] == 0 or (self.params['we'] > 0 and np.mod(it,self.params['nMstep']) != 0)):
                 updateflag = self.updateGDLearningRate()
                 # if asked for, recompute images
                 if updateflag:
@@ -2857,6 +2930,12 @@ class LDDMM:
             if self.params['we'] > 0 and np.mod(it,self.params['nMstep']) == 0:
                 #self.computeWeightEstimation()
                 self.updateWeightEstimationConstants()
+            
+            if self.params['optimizer'] == 'apgm':
+                self.apgm['acc_flag'] = not self.apgm['acc_flag']
+            
+            # iter increase
+            it = it + 1
             
     
     # reset all transforms
